@@ -20,7 +20,82 @@ class MyBot(BaseAgent):
         # Set up information about the boost pads now that the game is active and the info is available
         self.boost_pad_tracker.initialize_boosts(self.get_field_info())
 
-    def get_output(self, packet: GameTickPacket) -> SimpleControllerState:
+    
+def get_output(self, packet: GameTickPacket) -> SimpleControllerState:
+    self.boost_pad_tracker.update_boost_status(packet)
+
+    if self.active_sequence is not None and not self.active_sequence.done:
+        controls = self.active_sequence.tick(packet)
+        if controls is not None:
+            return controls
+
+    my_car = packet.game_cars[self.index]
+    car_location = Vec3(my_car.physics.location)
+    car_velocity = Vec3(my_car.physics.velocity)
+    ball_location = Vec3(packet.game_ball.physics.location)
+
+    # Blue team attacks toward positive Y.
+    # Orange team attacks toward negative Y.
+    attack_direction = 1 if self.team == 0 else -1
+
+    # Start by aiming at the current ball position.
+    ball_target = ball_location
+
+    # Predict the ball's future position when far away.
+    if car_location.dist(ball_location) > 1500:
+        prediction = self.get_ball_prediction_struct()
+
+        future_ball = find_slice_at_time(
+            prediction,
+            packet.game_info.seconds_elapsed + 1.0
+        )
+
+        if future_ball is not None:
+            ball_target = Vec3(future_ball.physics.location)
+
+    # Aim slightly behind the ball so we approach it
+    # from the side of our own goal.
+    target_location = Vec3(
+        ball_target.x,
+        ball_target.y - attack_direction * 150,
+        ball_target.z
+    )
+
+    # Show the bot's target while testing.
+    self.renderer.draw_line_3d(
+        car_location, target_location, self.renderer.white()
+    )
+    self.renderer.draw_rect_3d(
+        target_location, 8, 8, True,
+        self.renderer.cyan(), centered=True
+    )
+    self.renderer.draw_string_3d(
+        car_location, 1, 1,
+        f"Speed: {car_velocity.length():.1f}",
+        self.renderer.white()
+    )
+
+    # Keep the existing front-flip behavior.
+    if 750 < car_velocity.length() < 800:
+        return self.begin_front_flip(packet)
+
+    controls = SimpleControllerState()
+    controls.steer = steer_toward_target(my_car, target_location)
+    controls.throttle = 1.0
+
+    # Boost when far away, reasonably aligned, and not too fast.
+    distance_to_target = car_location.dist(target_location)
+
+    controls.boost = (
+        my_car.boost > 0
+        and my_car.has_wheel_contact
+        and car_velocity.length() < 2200
+        and abs(controls.steer) < 0.25
+        and distance_to_target > 1200
+    )
+
+    return controls
+
         """
         This function will be called by the framework many times per second. This is where you can
         see the motion of the ball, etc. and return controls to drive your car.
